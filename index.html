@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Only Chainlink's API may be contacted; only the pinned chart library may load. Keeps the stored secret contained. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline'; connect-src https://api.dataengine.chain.link; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>BTC/USD TWAP Live</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"
+  integrity="sha384-OK7vELvjHdhUFi31JYioPIcRHTROLdcDa6ZsNWgvgLaKj+9JqhU0Ad8g4wz3CXjA" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #ffffff; --border: #e0e3eb; --hover: #f0f3fa;
+    --ink: #131722; --ink-2: #50535e; --ink-3: #9598a1; --grid: #f0f3fa;
+    --up: #089981; --down: #f23645; --accent: #2962ff;
+    --sma: #f7a21b; --ema: #9c27b0; --page: #f5f6f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131722; --panel: #131722; --border: #2a2e39; --hover: #2a2e39;
+      --ink: #d1d4dc; --ink-2: #b2b5be; --ink-3: #787b86; --grid: #1e222d;
+      --up: #22ab94; --down: #f7525f; --accent: #2962ff;
+      --sma: #f7a21b; --ema: #ce93d8; --page: #0f121a;
+    }
+  }
+  [hidden] { display: none !important; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); display: flex; flex-direction: column;
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* top bar */
+  .topbar { display: flex; align-items: center; gap: 16px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .sym { display: flex; align-items: center; gap: 8px; }
+  .logo { width: 22px; height: 22px; border-radius: 50%; background: #f7931a; color: #fff;
+    display: grid; place-items: center; font-weight: 700; font-size: 13px; flex: none; }
+  .sym b { font-size: 15px; }
+  .sym small { color: var(--ink-3); }
+  .last { font-size: 20px; font-weight: 600; }
+  .chg { font-weight: 500; }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .spacer { flex: 1; }
+  .status { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+  .dot.live { background: var(--up); animation: pulse 1.6s infinite; }
+  .dot.off { background: var(--down); }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(34,171,148,.55)} 100%{box-shadow:0 0 0 7px rgba(34,171,148,0)} }
+
+  /* toolbar */
+  .toolbar { display: flex; align-items: center; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .toolbar button { background: none; border: 0; color: var(--ink-2); font: inherit; padding: 5px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .toolbar button:hover { background: var(--hover); color: var(--ink); }
+  .toolbar button[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
+  .toolbar button:disabled { opacity: .5; cursor: wait; }
+  .sep { width: 1px; align-self: stretch; background: var(--border); margin: 4px 6px; flex: none; }
+  .toolbar svg { width: 18px; height: 18px; vertical-align: -4px; }
+  .tz { display: flex; align-items: center; gap: 4px; color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+  .tz select { background: var(--panel); color: var(--ink); border: 1px solid var(--border); border-radius: 4px; padding: 3px 4px; font: inherit; font-size: 12px; max-width: 210px; }
+
+  /* chart */
+  .chart-wrap { position: relative; flex: 1; min-height: 320px; }
+  #chart { position: absolute; inset: 0; }
+  .legend { position: absolute; top: 8px; left: 12px; z-index: 3; pointer-events: none; line-height: 1.7; }
+  .legend .title { color: var(--ink); font-size: 14px; }
+  .legend .title span { color: var(--ink-3); }
+  .legend .ohlc { color: var(--ink-3); }
+  .legend .ohlc b { font-weight: 400; margin-right: 8px; }
+  .legend .ind { font-size: 12px; color: var(--ink-3); }
+  .legend .ind i { font-style: normal; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); pointer-events: none; z-index: 2; }
+  .err { color: var(--down); font-size: 12px; padding: 4px 12px; border-bottom: 1px solid var(--border); word-break: break-word; }
+  .foot { display: flex; justify-content: space-between; gap: 12px; padding: 4px 12px; border-top: 1px solid var(--border); color: var(--ink-3); font-size: 11px; flex-wrap: wrap; }
+
+  /* sign-in */
+  #login { position: fixed; inset: 0; z-index: 10; background: var(--page); display: grid; place-items: center; padding: 24px 16px; overflow: auto; font-size: 15px; line-height: 1.5; }
+  #login form { width: 100%; max-width: 440px; background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 28px; }
+  #login .logo { width: 40px; height: 40px; font-size: 20px; margin-bottom: 14px; }
+  #login h1 { font-size: 20px; margin: 0 0 6px; }
+  #login .lead { color: var(--ink-2); margin: 0 0 22px; font-size: 14px; }
+  #login label.f { display: block; font-weight: 600; font-size: 13px; margin: 16px 0 6px; }
+  #login input[type=text], #login input[type=password] { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--ink); font: inherit; font-size: 14px; }
+  #login input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  #login .row { display: flex; gap: 8px; margin-top: 16px; align-items: center; color: var(--ink-2); }
+  #login .hint { color: var(--ink-3); font-size: 12px; margin-top: 5px; }
+  #login button { margin-top: 24px; width: 100%; padding: 11px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  #login button:disabled { opacity: .6; cursor: wait; }
+  #login .msg { margin-top: 14px; font-size: 13px; color: var(--down); }
+  #login .note { color: var(--ink-3); font-size: 12px; margin-top: 18px; }
+</style>
+</head>
+<body>
+  <!-- sign-in (each visitor uses their own Chainlink credentials; nothing is sent anywhere except Chainlink) -->
+  <div id="login" hidden>
+    <form id="loginForm" autocomplete="off">
+      <div class="logo">₿</div>
+      <h1>Connect to Chainlink</h1>
+      <p class="lead">Live BTC/USD TWAP 60s chart. Sign in with your own Chainlink Data Streams details.</p>
+      <label class="f" for="username">Username</label>
+      <input id="username" type="text" required spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+      <label class="f" for="secret">Secret</label>
+      <input id="secret" type="password" required spellcheck="false">
+      <div class="row"><input type="checkbox" id="remember" checked><label for="remember">Remember me on this browser</label></div>
+      <div class="hint">Unticked: you'll be signed out when you close this tab.</div>
+      <button id="go">Connect</button>
+      <div class="msg" id="loginMsg" hidden></div>
+      <div class="note">Your details stay in this browser and are sent only to Chainlink (api.dataengine.chain.link). This page has no server of its own.</div>
+    </form>
+  </div>
+
+  <div class="topbar">
+    <div class="sym"><div class="logo">₿</div><b>BTCUSD</b><small>TWAP 60s · Chainlink Data Streams</small></div>
+    <div class="last num" id="last">—</div>
+    <div class="chg num" id="chg"></div>
+    <div class="spacer"></div>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></div>
+  </div>
+
+  <div class="toolbar" role="toolbar">
+    <div role="group" aria-label="Interval" id="intervals">
+      <button data-iv="1">1s</button>
+      <button data-iv="5">5s</button>
+      <button data-iv="15">15s</button>
+      <button data-iv="60" aria-pressed="true">1m</button>
+      <button data-iv="300">5m</button>
+      <button data-iv="900">15m</button>
+      <button data-iv="3600">1h</button>
+    </div>
+    <div class="sep"></div>
+    <div role="group" aria-label="Chart type" id="types">
+      <button data-type="candles" aria-pressed="true" title="Candles"><svg viewBox="0 0 28 28" fill="currentColor"><path d="M9 4h1v4h2v12h-2v4H9v-4H7V8h2zm9 3h1v5h2v8h-2v4h-1v-4h-2v-8h2z"/></svg></button>
+      <button data-type="bars" title="Bars"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 4v20M6 9h3M9 19h3M19 6v18M16 10h3M19 20h3"/></svg></button>
+      <button data-type="line" title="Line"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20l6-7 5 4 9-10"/></svg></button>
+      <button data-type="area" title="Area"><svg viewBox="0 0 28 28" fill="currentColor"><path d="M4 22l6-8 5 4 9-11v15z" opacity=".35"/><path d="M4 22l6-8 5 4 9-11" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+    </div>
+    <div class="sep"></div>
+    <div role="group" aria-label="Indicators">
+      <button data-ind="sma" aria-pressed="true">SMA 20</button>
+      <button data-ind="ema" aria-pressed="false">EMA 50</button>
+    </div>
+    <div class="sep"></div>
+    <button id="fit" title="Fit all data">Fit</button>
+    <button id="live" title="Scroll to real-time">Live ⇥</button>
+    <button id="more" title="Load one more hour of history">+1h history</button>
+    <div class="spacer"></div>
+    <label class="tz" title="Time zone">🕒 <select id="tz" aria-label="Time zone"></select></label>
+    <div class="sep"></div>
+    <button id="logout" title="Sign out and forget your details on this browser">Log out</button>
+  </div>
+  <div class="err" id="err" hidden></div>
+
+  <div class="chart-wrap">
+    <div class="legend" id="legend">
+      <div class="title">BTC / USD · TWAP 60s <span id="lgIv">· 1m · Chainlink</span></div>
+      <div class="ohlc num" id="lgOhlc"></div>
+      <div class="ind num" id="lgInd"></div>
+    </div>
+    <div class="empty" id="empty">Loading…</div>
+    <div id="chart"></div>
+  </div>
+
+  <div class="foot">
+    <span>Price = 60-second time-weighted average reported by the Chainlink DON (not spot). <span id="srcNote"></span></span>
+    <span class="num" id="feed"></span>
+  </div>
+
+<script>
+'use strict';
+const FEED_ID = '0x0002ee6757e8822c00d273bc340fc24c9cafe123a4ff2ea1dbdb31944bc7d95f';
+const API = 'https://api.dataengine.chain.link';
+const MAX_TICKS = 6 * 3600;   // keep up to ~6h of 1/s reports in memory
+
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ======================================================================
+// Chainlink Data Streams client (runs entirely in the browser)
+// ======================================================================
+const CRED_KEY = 'btctwap.creds';
+let creds = null, hmacKey = null;
+const EMPTY_BODY_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'; // sha256("")
+const enc = new TextEncoder();
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+async function useCreds(c) {
+  creds = c;
+  hmacKey = await crypto.subtle.importKey('raw', enc.encode(c.secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+}
+function loadCreds() {
+  for (const store of [sessionStorage, localStorage]) {
+    try { const c = JSON.parse(store.getItem(CRED_KEY)); if (c?.username && c?.secret) return c; } catch {}
+  }
+  return null;
+}
+function saveCreds(c, remember) {
+  forgetCreds();
+  try { (remember ? localStorage : sessionStorage).setItem(CRED_KEY, JSON.stringify({ username: c.username, secret: c.secret })); } catch {}
+}
+function forgetCreds() {
+  for (const store of [sessionStorage, localStorage]) { try { store.removeItem(CRED_KEY); } catch {} }
+}
+
+class ApiError extends Error { constructor(msg, fatal) { super(msg); this.fatal = fatal; } }
+
+// GET with Chainlink's HMAC headers: sign "GET <path> <sha256(body)> <username> <timestamp-ms>"
+async function api(path) {
+  const ts = Date.now().toString();
+  const sig = hex(await crypto.subtle.sign('HMAC', hmacKey, enc.encode(`GET ${path} ${EMPTY_BODY_HASH} ${creds.username} ${ts}`)));
+  let res;
+  try {
+    res = await fetch(API + path, { headers: { Authorization: creds.username, 'X-Authorization-Timestamp': ts, 'X-Authorization-Signature-SHA256': sig }, cache: 'no-store' });
+  } catch { throw new ApiError("Couldn't reach Chainlink. Check your internet connection.", false); }
+  const text = await res.text();
+  if (res.ok) return JSON.parse(text);
+  if (/user does not exist/i.test(text)) throw new ApiError('Username not recognised. Check the username.', true);
+  if (/signature/i.test(text)) throw new ApiError("Secret is wrong, or this computer's clock is off by more than 5 seconds.", true);
+  if (/not authorized|feeds? not/i.test(text)) throw new ApiError("This account doesn't have access to the BTC/USD TWAP 60s stream.", true);
+  if (/timestamp/i.test(text)) throw new ApiError("This computer's clock is off. Turn on automatic date & time and reload.", true);
+  throw new ApiError(`Chainlink returned ${res.status}: ${text.slice(0, 140)}`, res.status === 401 || res.status === 403);
+}
+
+// fullReport = abi.encode(bytes32[3] ctx, bytes reportBlob, bytes32[] rs, bytes32[] ss, bytes32 vs)
+// reportBlob (schema v2) = feedId, validFrom, observationsTimestamp, nativeFee, linkFee, expiresAt, int192 price
+function decodeReport(fullReport) {
+  const h = fullReport.replace(/^0x/, '');
+  const word = (s, i) => s.slice(i * 64, i * 64 + 64);
+  const blobOff = Number(BigInt('0x' + word(h, 3))) * 2;
+  const blobLen = Number(BigInt('0x' + h.slice(blobOff, blobOff + 64))) * 2;
+  const blob = h.slice(blobOff + 64, blobOff + 64 + blobLen);
+  const raw = BigInt.asIntN(256, BigInt('0x' + word(blob, 6)));
+  const SCALE = 10n ** 18n, neg = raw < 0n, a = neg ? -raw : raw;
+  const p = Number(a / SCALE) + Number(a % SCALE) / 1e18;
+  return { feedId: '0x' + word(blob, 0), t: Number(BigInt('0x' + word(blob, 2))), p: neg ? -p : p };
+}
+const toTick = (r) => { const d = decodeReport(r.fullReport); return d.feedId === FEED_ID ? { t: d.t, p: d.p } : null; };
+
+const fetchLatest = async () => toTick((await api(`/api/v1/reports/latest?feedID=${FEED_ID}`)).report);
+const fetchPage = async (start) => ((await api(`/api/v1/reports/page?feedID=${FEED_ID}&startTimestamp=${start}&limit=100`)).reports || []).map(toTick).filter(Boolean);
+
+// reports from [from, to): 100 per call, 6 calls at a time (1 hour ≈ 36 calls ≈ 9 s)
+async function fetchRange(from, to, onProgress, sess = session) {
+  const starts = []; for (let s = from; s < to; s += 100) starts.push(s);
+  const out = [];
+  for (let i = 0; i < starts.length; i += 6) {
+    if (sess !== session) return out;   // signed out / restarted meanwhile
+    (await Promise.all(starts.slice(i, i + 6).map(fetchPage))).forEach((ts) => out.push(...ts));
+    onProgress?.(Math.min(1, (i + 6) / starts.length));
+  }
+  return out.filter((x) => x.t < to);
+}
+
+// ======================================================================
+// Chart
+// ======================================================================
+const chart = LightweightCharts.createChart($('chart'), {
+  autoSize: true,
+  layout: { background: { color: css('--bg') }, textColor: css('--ink-3'), fontSize: 11, fontFamily: getComputedStyle(document.body).fontFamily },
+  grid: { vertLines: { color: css('--grid') }, horzLines: { color: css('--grid') } },
+  rightPriceScale: { borderColor: css('--border'), scaleMargins: { top: 0.15, bottom: 0.1 } },
+  timeScale: { borderColor: css('--border'), timeVisible: true, secondsVisible: true, rightOffset: 8, barSpacing: 8 },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal,
+    vertLine: { color: css('--ink-3'), labelBackgroundColor: css('--ink-2') },
+    horzLine: { color: css('--ink-3'), labelBackgroundColor: css('--ink-2') } },
+  // chart times are already shifted into the chosen zone, so format them as UTC
+  localization: { priceFormatter: fmt, timeFormatter: (t) => new Date(t * 1000).toLocaleString([], { timeZone: 'UTC', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) },
+});
+const UP = css('--up'), DOWN = css('--down');
+const priceFmt = { type: 'price', precision: 2, minMove: 0.01 };
+const makers = {
+  candles: () => chart.addCandlestickSeries({ upColor: UP, downColor: DOWN, borderVisible: false, wickUpColor: UP, wickDownColor: DOWN, priceFormat: priceFmt }),
+  bars: () => chart.addBarSeries({ upColor: UP, downColor: DOWN, thinBars: false, priceFormat: priceFmt }),
+  line: () => chart.addLineSeries({ color: css('--accent'), lineWidth: 2, priceFormat: priceFmt }),
+  area: () => chart.addAreaSeries({ lineColor: css('--accent'), topColor: 'rgba(41,98,255,.28)', bottomColor: 'rgba(41,98,255,0)', lineWidth: 2, priceFormat: priceFmt }),
+};
+const indDefs = {
+  sma: { label: 'SMA 20', period: 20, color: css('--sma'), on: true },
+  ema: { label: 'EMA 50', period: 50, color: css('--ema'), on: false },
+};
+let ticks = [];     // {t, p} ascending, unique t
+let candles = [];   // at the selected interval, times shifted into the chosen time zone
+let iv = 60, type = 'candles', main = makers[type]();
+for (const d of Object.values(indDefs)) d.series = chart.addLineSeries({ color: d.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, visible: d.on });
+const isOHLC = () => type === 'candles' || type === 'bars';
+const toSeries = (c) => isOHLC() ? c : { time: c.time, value: c.close };
+
+// ---------- time zones ----------
+// The chart library works in UTC, so (like TradingView) each timestamp is shifted to the chosen
+// zone's wall-clock time. Candles then line up with that zone's minutes/hours (e.g. IST's :30).
+const TZ_ALIASES = { 'Asia/Calcutta': 'Asia/Kolkata', 'Asia/Saigon': 'Asia/Ho_Chi_Minh', 'Asia/Katmandu': 'Asia/Kathmandu', 'Etc/UTC': 'UTC', 'Etc/GMT': 'UTC' };
+const rawTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const LOCAL_TZ = TZ_ALIASES[rawTz] || rawTz;
+const ZONES = ['UTC', 'America/Los_Angeles', 'America/Chicago', 'America/New_York', 'America/Sao_Paulo', 'Europe/London',
+  'Europe/Berlin', 'Europe/Moscow', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Tokyo', 'Australia/Sydney'];
+let tz = LOCAL_TZ;
+try { tz = localStorage.getItem('tz') || LOCAL_TZ; } catch {}
+const offCache = new Map();
+function tzOffset(t, zone = tz) {
+  const key = zone + Math.floor(t / 900);
+  if (offCache.has(key)) return offCache.get(key);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    .formatToParts(new Date(t * 1000)).map((p) => [p.type, p.value]));
+  const off = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) / 1000 - Math.floor(t);
+  offCache.set(key, off);
+  return off;
+}
+const shift = (t) => t + tzOffset(t);
+function offLabel(zone) {
+  const o = tzOffset(Date.now() / 1000, zone) / 60, s = o < 0 ? '−' : '+', a = Math.abs(o);
+  return `UTC${s}${Math.floor(a / 60)}${a % 60 ? ':' + String(a % 60).padStart(2, '0') : ''}`;
+}
+function fillZones() {
+  const list = [...new Set([LOCAL_TZ, ...ZONES, tz])];
+  $('tz').innerHTML = list.map((z) => `<option value="${z}">${z === LOCAL_TZ ? 'Local · ' : ''}${z.replace(/_/g, ' ')} (${offLabel(z)})</option>`).join('');
+  $('tz').value = tz;
+}
+
+// ---------- aggregation ----------
+function bucket(t) { return Math.floor(shift(t) / iv) * iv; }
+function rebuild() { candles = []; for (const { t, p } of ticks) addTick(t, p, false); }
+function addTick(t, p, live = true) {
+  const time = bucket(t), last = candles[candles.length - 1];
+  let c;
+  if (last && last.time === time) { c = last; c.high = Math.max(c.high, p); c.low = Math.min(c.low, p); c.close = p; }
+  else if (!last || time > last.time) { c = { time, open: last ? last.close : p, high: p, low: p, close: p }; if (last) { c.high = Math.max(c.high, c.open); c.low = Math.min(c.low, c.open); } candles.push(c); }
+  else return;
+  if (live) { main.update(toSeries(c)); updateIndicatorsLast(); }
+}
+// merge reports fetched out of order (history, gap fills) into the sorted tick list
+function mergeTicks(more) {
+  const m = new Map(ticks.map((x) => [x.t, x.p]));
+  for (const x of more) m.set(x.t, x.p);
+  ticks = [...m].map(([t, p]) => ({ t, p })).sort((a, b) => a.t - b.t);
+  if (ticks.length > MAX_TICKS) ticks = ticks.slice(-MAX_TICKS);
+}
+
+// ---------- indicators ----------
+function sma(period) {
+  const out = []; let sum = 0;
+  candles.forEach((c, i) => { sum += c.close; if (i >= period) sum -= candles[i - period].close; if (i >= period - 1) out.push({ time: c.time, value: sum / period }); });
+  return out;
+}
+function ema(period) {
+  const out = []; const k = 2 / (period + 1); let e;
+  candles.forEach((c, i) => {
+    if (i < period - 1) return;
+    e = i === period - 1 ? candles.slice(0, period).reduce((s, x) => s + x.close, 0) / period : c.close * k + e * (1 - k);
+    out.push({ time: c.time, value: e });
+  });
+  return out;
+}
+const calc = { sma: () => sma(indDefs.sma.period), ema: () => ema(indDefs.ema.period) };
+let indData = { sma: [], ema: [] };
+function renderIndicators() { for (const [k, d] of Object.entries(indDefs)) { indData[k] = calc[k](); d.series.setData(indData[k]); d.series.applyOptions({ visible: d.on }); } }
+function updateIndicatorsLast() { for (const [k, d] of Object.entries(indDefs)) { const arr = calc[k](); indData[k] = arr; if (arr.length) d.series.update(arr[arr.length - 1]); } }
+
+// ---------- render ----------
+function renderAll(fit) {
+  main.setData(candles.map(toSeries));
+  renderIndicators();
+  if (candles.length) $('empty').hidden = true;
+  if (fit) scrollLive();
+  renderLegend(); renderTopbar(); renderNote();
+}
+function scrollLive() {
+  const n = candles.length; if (!n) return;
+  chart.timeScale().setVisibleLogicalRange({ from: n - 120, to: n + 8 });
+}
+const ivLabel = (s) => s < 60 ? `${s}s` : s < 3600 ? `${s / 60}m` : `${s / 3600}h`;
+function renderLegend(param) {
+  $('lgIv').textContent = `· ${ivLabel(iv)} · Chainlink`;
+  let c = candles[candles.length - 1];
+  if (param?.time !== undefined) c = candles.find((x) => x.time === param.time) || c;
+  if (!c) return ($('lgOhlc').innerHTML = '');
+  const ch = c.close - c.open, pct = (ch / c.open) * 100, cls = ch >= 0 ? 'up' : 'down';
+  $('lgOhlc').innerHTML =
+    `O <b class="${cls}">${fmt(c.open)}</b>H <b class="${cls}">${fmt(c.high)}</b>L <b class="${cls}">${fmt(c.low)}</b>C <b class="${cls}">${fmt(c.close)}</b>` +
+    `<b class="${cls}">${ch >= 0 ? '+' : ''}${fmt(ch)} (${ch >= 0 ? '+' : ''}${pct.toFixed(3)}%)</b>`;
+  $('lgInd').innerHTML = Object.entries(indDefs).filter(([, d]) => d.on).map(([k, d]) => {
+    const arr = indData[k]; const pt = (param?.time !== undefined ? arr.find((x) => x.time === param.time) : null) || arr[arr.length - 1];
+    return `<i style="color:${d.color}">${d.label}</i> ${pt ? fmt(pt.value) : '—'}`;
+  }).join('&nbsp;&nbsp;&nbsp;');
+}
+chart.subscribeCrosshairMove((param) => renderLegend(param.time !== undefined ? param : null));
+
+let prevLast = null;
+function renderTopbar() {
+  const last = ticks[ticks.length - 1]; if (!last) return;
+  const first = ticks[0];
+  $('last').textContent = fmt(last.p);
+  $('last').className = 'last num ' + (prevLast == null ? '' : last.p >= prevLast ? 'up' : 'down');
+  prevLast = last.p;
+  const ch = last.p - first.p, pct = (ch / first.p) * 100;
+  $('chg').textContent = `${ch >= 0 ? '+' : ''}${fmt(ch)} (${ch >= 0 ? '+' : ''}${pct.toFixed(3)}%)`;
+  $('chg').className = 'chg num ' + (ch >= 0 ? 'up' : 'down');
+  $('chg').title = 'Change over the loaded history';
+  document.title = `${fmt(last.p)} · BTCUSD TWAP`;
+}
+function renderNote() {
+  if (!ticks.length) return;
+  const mins = Math.round((ticks[ticks.length - 1].t - ticks[0].t) / 60);
+  $('srcNote').textContent = `Showing ${mins >= 60 ? (mins / 60).toFixed(1) + ' h' : mins + ' min'} of ~1/s reports.`;
+}
+function setLive(ok, msg) {
+  $('dot').className = 'dot ' + (ok ? 'live' : 'off');
+  $('statusText').textContent = ok ? 'Live' : 'Reconnecting…';
+  $('err').hidden = !msg; $('err').textContent = msg || '';
+}
+
+// ======================================================================
+// Session: history backfill + live polling
+// ======================================================================
+let session = 0;
+let wake = null;   // resolves the polling loop's current sleep early
+const nap = (ms) => new Promise((r) => { const id = setTimeout(r, ms); wake = () => { clearTimeout(id); r(); }; });
+
+async function startSession() {
+  const s = ++session;
+  ticks = []; candles = []; prevLast = null; renderAll(false);
+  $('empty').hidden = false; $('empty').textContent = 'Loading…';
+  $('feed').textContent = `${FEED_ID.slice(0, 10)}…${FEED_ID.slice(-4)} · mainnet`;
+  poll(s);
+  // last hour of history, then fit the view
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const hist = await fetchRange(now - 3600, now, (f) => { if (!$('empty').hidden) $('empty').textContent = `Loading the last hour… ${Math.round(f * 100)}%`; }, s);
+    if (s !== session) return;
+    mergeTicks(hist); rebuild(); renderAll(true);
+  } catch (e) { if (s === session) handleError(e); }
+}
+
+async function poll(s) {
+  let failures = 0;
+  while (s === session) {
+    try {
+      const x = await fetchLatest();
+      if (s !== session) return;
+      const lastT = ticks.length ? ticks[ticks.length - 1].t : -1;
+      if (x && x.t > lastT) {
+        // came back after a pause (hidden tab, sleep, network): fill the gap first
+        if (lastT > 0 && x.t - lastT > 3) { mergeTicks(await fetchRange(Math.max(lastT + 1, x.t - 3600), x.t, null, s)); rebuild(); renderAll(false); }
+        ticks.push(x); if (ticks.length > MAX_TICKS) ticks.shift();
+        if (candles.length) addTick(x.t, x.p); else { rebuild(); renderAll(true); }
+        renderTopbar(); renderLegend(); renderNote();
+      }
+      failures = 0; setLive(true);
+    } catch (e) {
+      if (s !== session) return;
+      if (e.fatal) return handleError(e);
+      failures++; setLive(false, e.message);
+    }
+    // ~1/s while visible; slower in a background tab (gap is filled when it comes back)
+    await nap(document.hidden ? 15000 : failures ? Math.min(30000, 1000 * 2 ** failures) : 1000);
+  }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wake?.(); });
+
+function handleError(e) {
+  session++;
+  showLogin(e.message);
+}
+
+// ======================================================================
+// Sign-in / sign-out
+// ======================================================================
+function showLogin(msg) {
+  $('login').hidden = false;
+  $('loginMsg').hidden = !msg; $('loginMsg').textContent = msg || '';
+  $('go').disabled = false; $('go').textContent = 'Connect';
+  if (creds) $('username').value = creds.username;
+  setTimeout(() => ($('username').value ? $('secret') : $('username')).focus(), 0);
+}
+$('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const c = { username: $('username').value.trim(), secret: $('secret').value.trim() };
+  if (c.username === c.secret) { $('loginMsg').hidden = false; $('loginMsg').textContent = 'The secret is the same as the username. Paste the secret, not the username.'; return; }
+  $('go').disabled = true; $('go').textContent = 'Checking…'; $('loginMsg').hidden = true;
+  try {
+    await useCreds(c);
+    await fetchLatest();                 // proves the details work before saving them
+    saveCreds(c, $('remember').checked);
+    $('secret').value = '';
+    $('login').hidden = true;
+    startSession();
+  } catch (err) {
+    creds = null; hmacKey = null;
+    showLogin(err.message);
+  }
+});
+$('logout').onclick = () => {
+  if (!confirm('Log out? Your Chainlink details will be removed from this browser.')) return;
+  session++; forgetCreds(); creds = null; hmacKey = null;
+  ticks = []; candles = []; renderAll(false);
+  $('username').value = ''; showLogin();
+};
+
+// ======================================================================
+// Controls
+// ======================================================================
+function press(groupSel, btn) { document.querySelectorAll(groupSel + ' button').forEach((b) => b.setAttribute('aria-pressed', b === btn)); }
+document.querySelectorAll('#intervals button').forEach((b) => b.addEventListener('click', () => { press('#intervals', b); iv = Number(b.dataset.iv); rebuild(); renderAll(true); }));
+document.querySelectorAll('#types button').forEach((b) => b.addEventListener('click', () => {
+  press('#types', b); const range = chart.timeScale().getVisibleLogicalRange();
+  chart.removeSeries(main); type = b.dataset.type; main = makers[type]();
+  main.setData(candles.map(toSeries)); if (range) chart.timeScale().setVisibleLogicalRange(range);
+}));
+document.querySelectorAll('[data-ind]').forEach((b) => b.addEventListener('click', () => {
+  const d = indDefs[b.dataset.ind]; d.on = !d.on; b.setAttribute('aria-pressed', d.on);
+  d.series.applyOptions({ visible: d.on }); renderLegend();
+}));
+$('fit').onclick = () => chart.timeScale().fitContent();
+$('live').onclick = scrollLive;
+$('more').onclick = async () => {
+  if (!ticks.length || ticks.length >= MAX_TICKS - 3600) return;
+  const s = session, btn = $('more'), first = ticks[0].t;
+  btn.disabled = true;
+  try {
+    const more = await fetchRange(first - 3600, first, (f) => (btn.textContent = `Loading… ${Math.round(f * 100)}%`));
+    if (s !== session) return;
+    const range = chart.timeScale().getVisibleLogicalRange(), before = candles.length;
+    mergeTicks(more); rebuild(); renderAll(false);
+    if (range) chart.timeScale().setVisibleLogicalRange({ from: range.from + candles.length - before, to: range.to + candles.length - before });
+  } catch (e) { setLive(false, e.message); }
+  btn.disabled = false; btn.textContent = '+1h history';
+};
+fillZones();
+$('tz').addEventListener('change', () => { tz = $('tz').value; try { localStorage.setItem('tz', tz); } catch {} rebuild(); renderAll(true); });
+
+// ======================================================================
+// Boot
+// ======================================================================
+(async () => {
+  const saved = loadCreds();
+  if (!saved) return showLogin();
+  await useCreds(saved);
+  startSession();
+})();
+</script>
+</body>
+</html>
