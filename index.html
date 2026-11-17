@@ -138,6 +138,7 @@
     <div role="group" aria-label="Indicators">
       <button data-ind="sma" aria-pressed="true">SMA 20</button>
       <button data-ind="ema" aria-pressed="false">EMA 50</button>
+      <button data-ind="st" aria-pressed="true" title="Supertrend (ATR 10, factor 3) with buy/sell signals">Supertrend</button>
     </div>
     <div class="sep"></div>
     <button id="fit" title="Fit all data">Fit</button>
@@ -327,7 +328,7 @@ function addTick(t, p, live = true) {
   if (last && last.time === time) { c = last; c.high = Math.max(c.high, p); c.low = Math.min(c.low, p); c.close = p; }
   else if (!last || time > last.time) { c = { time, open: last ? last.close : p, high: p, low: p, close: p }; if (last) { c.high = Math.max(c.high, c.open); c.low = Math.min(c.low, c.open); } candles.push(c); }
   else return;
-  if (live) { main.update(toSeries(c)); updateIndicatorsLast(); }
+  if (live) { main.update(toSeries(c)); updateIndicatorsLast(); updateSupertrendLast(); }
 }
 // merge reports fetched out of order (history, gap fills) into the sorted tick list
 function mergeTicks(more) {
@@ -357,10 +358,64 @@ let indData = { sma: [], ema: [] };
 function renderIndicators() { for (const [k, d] of Object.entries(indDefs)) { indData[k] = calc[k](); d.series.setData(indData[k]); d.series.applyOptions({ visible: d.on }); } }
 function updateIndicatorsLast() { for (const [k, d] of Object.entries(indDefs)) { const arr = calc[k](); indData[k] = arr; if (arr.length) d.series.update(arr[arr.length - 1]); } }
 
+// ---------- Supertrend (TradingView defaults: ATR length 10, factor 3, hl2 source, RMA ATR) ----------
+const ST = { label: 'Supertrend 10 3', period: 10, factor: 3, on: true, data: [], sigKey: '' };
+const stLine = (color) => chart.addLineSeries({ color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, visible: ST.on });
+ST.upSeries = stLine(UP); ST.downSeries = stLine(DOWN);
+function supertrend() {
+  const n = ST.period, f = ST.factor, out = [];
+  let atr, sumTr = 0, lower, upper, trend, prevClose;
+  candles.forEach((c, i) => {
+    const tr = i === 0 ? c.high - c.low : Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+    if (i < n) { sumTr += tr; if (i === n - 1) atr = sumTr / n; } else atr = (atr * (n - 1) + tr) / n;
+    if (atr !== undefined) {
+      const mid = (c.high + c.low) / 2;
+      let lo = mid - f * atr, up = mid + f * atr;
+      if (lower !== undefined && !(lo > lower || prevClose < lower)) lo = lower;   // lower band only ratchets up
+      if (upper !== undefined && !(up < upper || prevClose > upper)) up = upper;   // upper band only ratchets down
+      const prev = trend;
+      trend = prev === undefined ? -1 : prev === -1 ? (c.close > up ? 1 : -1) : (c.close < lo ? -1 : 1);
+      out.push({ time: c.time, value: trend === 1 ? lo : up, trend, flip: prev !== undefined && prev !== trend });
+      lower = lo; upper = up;
+    }
+    prevClose = c.close;
+  });
+  return out;
+}
+const stPoint = (p, want) => p.trend === want ? { time: p.time, value: p.value } : { time: p.time };
+function renderSignals(force) {
+  const sig = ST.on ? ST.data.filter((p) => p.flip) : [];
+  const key = sig.map((p) => p.time + ':' + p.trend).join();
+  if (!force && key === ST.sigKey) return;
+  ST.sigKey = key;
+  main.setMarkers(sig.map((p) => p.trend === 1
+    ? { time: p.time, position: 'belowBar', color: UP, shape: 'arrowUp', text: 'Buy' }
+    : { time: p.time, position: 'aboveBar', color: DOWN, shape: 'arrowDown', text: 'Sell' }));
+}
+function renderSupertrend() {
+  ST.data = supertrend();
+  ST.upSeries.setData(ST.data.map((p) => stPoint(p, 1)));
+  ST.downSeries.setData(ST.data.map((p) => stPoint(p, -1)));
+  for (const s of [ST.upSeries, ST.downSeries]) s.applyOptions({ visible: ST.on });
+  renderSignals(true);
+}
+function updateSupertrendLast() {
+  ST.data = supertrend();
+  const p = ST.data[ST.data.length - 1]; if (!p) return;
+  ST.upSeries.update(stPoint(p, 1)); ST.downSeries.update(stPoint(p, -1));
+  renderSignals(false);
+}
+function stLegend(param) {
+  if (!ST.on) return '';
+  const pt = (param?.time !== undefined ? ST.data.find((x) => x.time === param.time) : null) || ST.data[ST.data.length - 1];
+  const col = pt ? (pt.trend === 1 ? UP : DOWN) : 'inherit';
+  return `&nbsp;&nbsp;&nbsp;<i style="color:${col}">${ST.label}</i> ${pt ? fmt(pt.value) + (pt.trend === 1 ? ' ▲' : ' ▼') : '—'}`;
+}
+
 // ---------- render ----------
 function renderAll(fit) {
   main.setData(candles.map(toSeries));
-  renderIndicators();
+  renderIndicators(); renderSupertrend();
   if (candles.length) $('empty').hidden = true;
   if (fit) scrollLive();
   renderLegend(); renderTopbar(); renderNote();
@@ -382,7 +437,7 @@ function renderLegend(param) {
   $('lgInd').innerHTML = Object.entries(indDefs).filter(([, d]) => d.on).map(([k, d]) => {
     const arr = indData[k]; const pt = (param?.time !== undefined ? arr.find((x) => x.time === param.time) : null) || arr[arr.length - 1];
     return `<i style="color:${d.color}">${d.label}</i> ${pt ? fmt(pt.value) : '—'}`;
-  }).join('&nbsp;&nbsp;&nbsp;');
+  }).join('&nbsp;&nbsp;&nbsp;') + stLegend(param);
 }
 chart.subscribeCrosshairMove((param) => renderLegend(param.time !== undefined ? param : null));
 
@@ -505,9 +560,14 @@ document.querySelectorAll('#intervals button').forEach((b) => b.addEventListener
 document.querySelectorAll('#types button').forEach((b) => b.addEventListener('click', () => {
   press('#types', b); const range = chart.timeScale().getVisibleLogicalRange();
   chart.removeSeries(main); type = b.dataset.type; main = makers[type]();
-  main.setData(candles.map(toSeries)); if (range) chart.timeScale().setVisibleLogicalRange(range);
+  main.setData(candles.map(toSeries)); renderSignals(true); if (range) chart.timeScale().setVisibleLogicalRange(range);
 }));
 document.querySelectorAll('[data-ind]').forEach((b) => b.addEventListener('click', () => {
+  if (b.dataset.ind === 'st') {
+    ST.on = !ST.on; b.setAttribute('aria-pressed', ST.on);
+    for (const s of [ST.upSeries, ST.downSeries]) s.applyOptions({ visible: ST.on });
+    renderSignals(true); renderLegend(); return;
+  }
   const d = indDefs[b.dataset.ind]; d.on = !d.on; b.setAttribute('aria-pressed', d.on);
   d.series.applyOptions({ visible: d.on }); renderLegend();
 }));
